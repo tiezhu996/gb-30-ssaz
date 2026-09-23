@@ -19,6 +19,8 @@ const (
 	LogAppSubmitFailed          = "adoption application submit failed: pet_id=%d"
 	LogAppStatusChanged         = "application status changed: id=%d status=%s"
 	LogAppStatusChangeFailed    = "application status change failed: id=%d"
+	LogAppWithdrawn             = "application withdrawn: id=%d"
+	LogAppWithdrawFailed        = "application withdraw failed: id=%d"
 	LogReviewCreateSuccess      = "visit review created: application_id=%d"
 	LogReviewSubmitSuccess      = "visit review submitted: id=%d"
 	LogReviewOverdueMarked      = "visit review marked overdue: id=%d"

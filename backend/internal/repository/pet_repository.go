@@ -31,6 +31,18 @@ func (r *PetRepository) Update(p *model.Pet) error { return translate(r.db.Save(
 // UpdateTx persists a pet within an outer transaction.
 func (r *PetRepository) UpdateTx(tx *gorm.DB, p *model.Pet) error { return translate(tx.Save(p).Error) }
 
+// UpdateStatusIfTx conditionally changes a pet's status from wantCurrent to next.
+// It returns whether the row was moved.
+func (r *PetRepository) UpdateStatusIfTx(tx *gorm.DB, id uint, wantCurrent, next string) (bool, error) {
+	res := tx.Model(&model.Pet{}).
+		Where("id = ? AND status = ?", id, wantCurrent).
+		Updates(map[string]interface{}{"status": next})
+	if res.Error != nil {
+		return false, translate(res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // Delete removes a pet by id.
 func (r *PetRepository) Delete(id uint) error {
 	res := r.db.Delete(&model.Pet{}, id)

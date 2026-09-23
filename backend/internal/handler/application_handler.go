@@ -80,3 +80,18 @@ func (h *ApplicationHandler) UpdateStatus(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, dto.OK(a))
 }
+
+// Withdraw handles PUT /applications/:id/withdraw.
+func (h *ApplicationHandler) Withdraw(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid application id"))
+		return
+	}
+	a, err := h.svc.Withdraw(middleware.GetUserID(c), uint(id))
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.OK(a))
+}

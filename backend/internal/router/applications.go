@@ -14,4 +14,5 @@ func registerApplicationRoutes(v1 *gin.RouterGroup, cfg *config.Config, h *handl
 	apps.GET("/me", h.ListMy)
 	apps.GET("/org", middleware.RequireRole("org"), h.ListOrg)
 	apps.PUT("/:id/status", h.UpdateStatus)
+	apps.PUT("/:id/withdraw", middleware.RequireRole("user"), h.Withdraw)
 }

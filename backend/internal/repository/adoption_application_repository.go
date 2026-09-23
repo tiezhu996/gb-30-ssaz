@@ -43,6 +43,27 @@ func (r *AdoptionApplicationRepository) UpdateTx(tx *gorm.DB, a *model.AdoptionA
 	return translate(tx.Save(a).Error)
 }
 
+// UpdateStatusTx conditionally moves an application from wantCurrent to next,
+// refreshing updated_at. The caller can set withdrawnAt to record a withdrawal.
+// It returns true only when the row was actually moved; a false result means
+// the status changed concurrently and the caller must abort the transaction.
+func (r *AdoptionApplicationRepository) UpdateStatusTx(tx *gorm.DB, id uint, wantCurrent, next string, withdrawnAt interface{}) (bool, error) {
+	updates := map[string]interface{}{
+		"status":     next,
+		"updated_at": gorm.Expr("NOW()"),
+	}
+	if withdrawnAt != nil {
+		updates["withdrawn_at"] = withdrawnAt
+	}
+	res := tx.Model(&model.AdoptionApplication{}).
+		Where("id = ? AND status = ?", id, wantCurrent).
+		Updates(updates)
+	if res.Error != nil {
+		return false, translate(res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // ListByUser returns applications of a user.
 func (r *AdoptionApplicationRepository) ListByUser(userID uint) ([]model.AdoptionApplication, error) {
 	var items []model.AdoptionApplication
