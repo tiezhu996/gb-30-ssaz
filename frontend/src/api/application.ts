@@ -16,3 +16,7 @@ export function listOrgApplications(status?: string) {
 export function updateApplicationStatus(id: number, status: string) {
   return request.put<never, AdoptionApplication>(`/applications/${id}/status`, { status })
 }
+
+export function withdrawApplication(id: number) {
+  return request.put<never, AdoptionApplication>(`/applications/${id}/withdraw`)
+}

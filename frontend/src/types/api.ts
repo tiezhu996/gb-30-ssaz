@@ -29,6 +29,7 @@ export interface AdoptionApplication {
   org_id: number
   questionnaire: string
   status: string
+  withdrawn_at: string | null
   created_at: string
   updated_at: string
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -71,6 +72,11 @@ func (s *ApplicationService) Submit(userID, petID uint, questionnaire string) (*
 }
 
 // UpdateStatus transitions an application along the state machine.
+//
+// The transition is applied with a compare-and-swap on the current status so
+// that an org-side push can never overwrite a concurrent withdrawal (and vice
+// versa). On a lost race the operation fails and the freshly persisted status
+// is reported back to the caller.
 func (s *ApplicationService) UpdateStatus(userID, id uint, role string, next string) (*model.AdoptionApplication, error) {
 	if !constants.IsValidApplicationStatus(next) {
 		return nil, util.NewAppError(422, constants.CodeValidationError,
@@ -104,34 +110,118 @@ func (s *ApplicationService) UpdateStatus(userID, id uint, role string, next str
 		return nil, util.NewAppError(409, constants.CodeConflict,
 			fmt.Sprintf("AdoptionApplication[id=%d] status change failed: %s -> %s not allowed", id, a.Status, next))
 	}
-	a.Status = next
-	if next == constants.AppStatusApproved {
-		pet, err := s.petRepo.FindByID(a.PetID)
-		if err != nil {
-			return nil, fmt.Errorf("application status pet find: %w", err)
-		}
-		pet.Status = constants.PetStatusAdopted
-		err = s.db.Transaction(func(tx *gorm.DB) error {
-			if err := s.repo.UpdateTx(tx, a); err != nil {
-				return fmt.Errorf("application status update: %w", err)
+	fromStatus := a.Status
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Lock the application row first, then the pet row, matching the lock
+		// order used by Withdraw to avoid deadlocks under concurrency.
+		if err := s.repo.UpdateStatusCAS(tx, id, fromStatus, next, nil); err != nil {
+			if errors.Is(err, repository.ErrConcurrentConflict) {
+				return errConcurrentStatus(id)
 			}
+			return fmt.Errorf("application status update: %w", err)
+		}
+		if next == constants.AppStatusApproved {
+			pet, err := s.petRepo.FindByID(a.PetID)
+			if err != nil {
+				return fmt.Errorf("application status pet find: %w", err)
+			}
+			pet.Status = constants.PetStatusAdopted
 			if err := s.petRepo.UpdateTx(tx, pet); err != nil {
 				return fmt.Errorf("application status pet update: %w", err)
 			}
-			return nil
-		})
-		if err != nil {
-			s.logger.Error(fmt.Sprintf(constants.LogAppStatusChangeFailed, id), "error", err)
-			return nil, err
 		}
-	} else {
-		if err := s.repo.Update(a); err != nil {
-			s.logger.Error(fmt.Sprintf(constants.LogAppStatusChangeFailed, id), "error", err)
-			return nil, fmt.Errorf("application status update: %w", err)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, repository.ErrConcurrentConflict) {
+			return nil, s.statusConflictError(id)
 		}
+		s.logger.Error(fmt.Sprintf(constants.LogAppStatusChangeFailed, id), "error", err)
+		return nil, err
 	}
 	s.logger.Info(fmt.Sprintf(constants.LogAppStatusChanged, id, next), "id", id)
-	return a, nil
+	return s.repo.FindByID(id)
+}
+
+// Withdraw lets an applicant withdraw an application that has not yet entered
+// the offline interview. The application becomes "withdrawn" (questionnaire and
+// timeline retained) and the pet is restored to available in the same
+// transaction. If the org has already advanced the application past the
+// withdrawable stages, the whole withdrawal fails and the org's freshly
+// updated status is preserved.
+func (s *ApplicationService) Withdraw(userID, id uint) (*model.AdoptionApplication, error) {
+	a, err := s.repo.FindByID(id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, util.NewAppError(404, constants.CodeNotFound, fmt.Sprintf("AdoptionApplication[id=%d] not found", id))
+		}
+		return nil, fmt.Errorf("application withdraw find: %w", err)
+	}
+	if a.UserID != userID {
+		return nil, util.NewAppError(403, constants.CodeForbidden,
+			fmt.Sprintf("AdoptionApplication[id=%d] withdraw failed: not owner", id))
+	}
+	if !constants.IsWithdrawableApplicationStatus(a.Status) {
+		return nil, util.NewAppError(409, constants.CodeConflict,
+			fmt.Sprintf("AdoptionApplication[id=%d] withdraw failed: status=%s no longer withdrawable", id, a.Status))
+	}
+	fromStatus := a.Status
+	now := time.Now()
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Lock the application row and re-check under the lock so a concurrent
+		// org-side push and a withdrawal cannot interleave.
+		locked, err := s.repo.FindByIDForUpdate(tx, id)
+		if err != nil {
+			return fmt.Errorf("application withdraw lock: %w", err)
+		}
+		if !constants.IsWithdrawableApplicationStatus(locked.Status) {
+			return errConcurrentStatus(id)
+		}
+		if err := s.repo.UpdateStatusCAS(tx, id, locked.Status, constants.AppStatusWithdrawn,
+			map[string]interface{}{"withdrawn_at": now}); err != nil {
+			if errors.Is(err, repository.ErrConcurrentConflict) {
+				return errConcurrentStatus(id)
+			}
+			return fmt.Errorf("application withdraw update: %w", err)
+		}
+		pet, err := s.petRepo.FindByID(locked.PetID)
+		if err != nil {
+			return fmt.Errorf("application withdraw pet find: %w", err)
+		}
+		pet.Status = constants.PetStatusAvailable
+		if err := s.petRepo.UpdateTx(tx, pet); err != nil {
+			return fmt.Errorf("application withdraw pet update: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, repository.ErrConcurrentConflict) {
+			s.logger.Warn(fmt.Sprintf(constants.LogAppWithdrawConflict, id, fromStatus), "id", id)
+			return nil, s.statusConflictError(id)
+		}
+		s.logger.Error(fmt.Sprintf(constants.LogAppWithdrawFailed, id), "error", err)
+		return nil, err
+	}
+	s.logger.Info(fmt.Sprintf(constants.LogAppWithdrawn, id), "id", id)
+	return s.repo.FindByID(id)
+}
+
+// statusConflictError reloads the application and reports its current status so
+// the client can refresh and converge with the concurrent decision.
+func (s *ApplicationService) statusConflictError(id uint) error {
+	current, findErr := s.repo.FindByID(id)
+	currentStatus := "unknown"
+	if findErr == nil {
+		currentStatus = current.Status
+	}
+	return util.NewAppError(409, constants.CodeConflict,
+		fmt.Sprintf("AdoptionApplication[id=%d] update failed: concurrent status change, current status=%s", id, currentStatus))
+}
+
+// errConcurrentStatus tags an in-transaction lost race so it can be translated
+// to a 409 after rollback.
+func errConcurrentStatus(id uint) error {
+	return fmt.Errorf("%w: application %d", repository.ErrConcurrentConflict, id)
 }
 
 // ListByUser returns a user's applications.

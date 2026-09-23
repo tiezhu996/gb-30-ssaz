@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"time"
+
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/gbadopt/gbadopt/internal/model"
 )
@@ -41,6 +44,41 @@ func (r *AdoptionApplicationRepository) Update(a *model.AdoptionApplication) err
 // UpdateTx persists an application within an outer transaction.
 func (r *AdoptionApplicationRepository) UpdateTx(tx *gorm.DB, a *model.AdoptionApplication) error {
 	return translate(tx.Save(a).Error)
+}
+
+// UpdateStatusCAS conditionally transitions an application from fromStatus to
+// toStatus within a transaction. It returns ErrConcurrentConflict when the
+// application's current status no longer matches fromStatus (e.g. a concurrent
+// withdrawal or org-side status push), so the caller can fail the whole
+// operation and keep the other side's freshly written status untouched.
+func (r *AdoptionApplicationRepository) UpdateStatusCAS(tx *gorm.DB, id uint, fromStatus, toStatus string, extra map[string]interface{}) error {
+	values := map[string]interface{}{
+		"status":     toStatus,
+		"updated_at": time.Now(),
+	}
+	for k, v := range extra {
+		values[k] = v
+	}
+	res := tx.Model(&model.AdoptionApplication{}).
+		Where("id = ? AND status = ?", id, fromStatus).
+		Updates(values)
+	if res.Error != nil {
+		return translate(res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrConcurrentConflict
+	}
+	return nil
+}
+
+// FindByIDForUpdate locates an application by id and takes a row lock,
+// valid for the duration of the surrounding transaction.
+func (r *AdoptionApplicationRepository) FindByIDForUpdate(tx *gorm.DB, id uint) (*model.AdoptionApplication, error) {
+	var a model.AdoptionApplication
+	if err := translate(tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&a, id).Error); err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 // ListByUser returns applications of a user.

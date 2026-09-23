@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS adoption_applications (
   org_id BIGINT NOT NULL,
   questionnaire JSONB DEFAULT '{}',
   status VARCHAR(32) NOT NULL DEFAULT 'submitted',
+  withdrawn_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT fk_app_user FOREIGN KEY (user_id) REFERENCES users(id),

@@ -9,8 +9,9 @@ import (
 
 // Sentinel errors shared by all repositories.
 var (
-	ErrNotFound  = errors.New("record not found")
-	ErrDuplicate = errors.New("duplicate record")
+	ErrNotFound           = errors.New("record not found")
+	ErrDuplicate          = errors.New("duplicate record")
+	ErrConcurrentConflict = errors.New("concurrent update conflict")
 )
 
 func isDuplicate(err error) bool {

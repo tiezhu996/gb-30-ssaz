@@ -134,6 +134,7 @@ gb-30/
 | GET | /api/v1/applications/me | 登录 | 我的申请列表 |
 | GET | /api/v1/applications/org | org | 机构收到的申请 |
 | PUT | /api/v1/applications/:id/status | 登录 | 申请状态流转（approved 时事务更新宠物为已领养） |
+| PUT | /api/v1/applications/:id/withdraw | 登录 | 申请人撤回申请（进入线下面签前可撤回；事务：申请置 withdrawn + 记录撤回时间 + 宠物恢复 available；并发下与机构推进互斥） |
 | GET | /api/v1/reviews/me | 登录 | 我的回访记录 |
 | GET | /api/v1/reviews/org | org | 机构回访记录 |
 | POST | /api/v1/reviews | org（限流） | 创建回访计划 |
@@ -156,10 +157,10 @@ gb-30/
 
 ## 枚举出现位置清单
 
-### ApplicationStatus（submitted/org_review/communicating/confirmed/offline_interview/approved/rejected）
+### ApplicationStatus（submitted/org_review/communicating/confirmed/offline_interview/approved/rejected/withdrawn）
 
-- 后端：`internal/constants/application.go`（定义+状态机）、`internal/model/adoption_application.go`（模型）、`internal/service/application_service.go`（流转校验）、`internal/util/formatters.go`（AppStatusText）、`internal/constants/log_templates.go`、`database/init.sql`
-- 前端：`src/constants/application.ts`（定义）、`src/components/common/ApplicationStatusBadge.tsx`、`src/pages/Applications.tsx`（进度列表/筛选）、`src/hooks/useAdoptionStats.ts`
+- 后端：`internal/constants/application.go`（定义+状态机+可撤回状态集合）、`internal/model/adoption_application.go`（模型，含 withdrawn_at）、`internal/service/application_service.go`（流转校验、撤回事务与并发 CAS）、`internal/util/formatters.go`（AppStatusText）、`internal/constants/log_templates.go`、`database/init.sql`
+- 前端：`src/constants/application.ts`（定义+可撤回状态）、`src/components/common/ApplicationStatusBadge.tsx`、`src/pages/Applications.tsx`（进度列表/筛选/撤回按钮）、`src/hooks/useAdoptionStats.ts`
 
 ### PetSpecies（dog/cat/rabbit/other）
 
